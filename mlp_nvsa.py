@@ -4,14 +4,10 @@ Only a single MLP is trained instead of an ensemble.
 Aiming for 0 error as a function of circle separation, we look at the required
 number of samples needed.
 """
-from itertools import cycle
-from functools import partial
 import equinox as eqx
 import optax
 from jaxtyping import Array, Float, Int, PyTree
-from typing import Optional
 from jax import numpy as jnp, vmap, jit, random as jrand, nn as jnn
-import math
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -67,13 +63,13 @@ def train_model(model, data, n_epochs=1000) -> eqx.nn.MLP:
     return model
 
 
-def test_model(model, alpha, N_TEST=int(1e5), inf=None):
-    """Does the model ensemble correctly classify the outer circle?"""
+def error_fraction(model, alpha, N_TEST=int(1e5), inf=None):
+    """What fraction of the outer circle is misclassified by the model?"""
     ts_ = jnp.linspace(0, 2*jnp.pi, N_TEST)
     outer = alpha*jnp.stack((jnp.cos(ts_), jnp.sin(ts_)), axis=1)
     outer = jnp.einsum('ji,nj->ni', inf, outer)
     preds = vmap(model)(outer)
-    return (preds < 0.5).any()
+    return (preds < 0.5).mean()
 
 
 if __name__ == "__main__":
@@ -81,48 +77,52 @@ if __name__ == "__main__":
     rng = jrand.PRNGKey(SEED)
     rng, shufkey, mkey, ikey = jrand.split(rng, num=4)
     # params
-    ALPHA_ = jnp.linspace(0, ALPHA_MAX := jnp.log(1.1), (N_ALPHA := 100)+1)[1:]
-    ALPHA_ = jnp.exp(ALPHA_)
+    ALPHA_ = 1 + jnp.linspace(0.1, 10, 15)/(1e3)
+    ERR_THRESHOLD = 0.05
     EPOCHS = 1000
-    N_MAX = 5000
-    D = 3
+    N_MAX = 500
+    D = [2, 3, 8, 16]
     N_ = []
     # mlp params
     mlp_kwargs = dict(
-        in_size=D,
         out_size=1,
         width_size=4096,
         depth=1,
         final_activation=jnn.sigmoid
         )
-    mlp = eqx.nn.MLP(**mlp_kwargs, key=mkey)
 
-    # inflator to larger dim
-    inflator = jrand.normal(ikey, shape=(2, D))
-
-    # A bit of efficiency: let us start from the polygon hypothesis
-    hyps = jnn.relu(polygon(ALPHA_)-15).astype(int)
-    for a, n in tqdm(zip(ALPHA_, hyps), total=N_ALPHA):
-        print(f"Doing {a}")
-        is_some_error = True
-        while (n < N_MAX) and (is_some_error):
-            n += 1
-            xs, ys = get_points(N=n, alpha=a)
-            xs = jnp.einsum('ji,nj->ni', inflator, xs)
-            model = eqx.nn.MLP(**mlp_kwargs, key=mkey)
-            model = train_model(model, (xs, ys), n_epochs=EPOCHS)
-            # perform test on trained model
-            is_some_error = test_model(model, alpha=a, inf=inflator)
-            print(f"With {n} points: {is_some_error}")
-        N_.append(n)
+    # bisection scheme for finding N at every ALPHA_
+    ND_ = []
+    for d in tqdm(D):
+        # inflator to larger dim
+        inflator = jrand.normal(ikey, shape=(2, d))
+        ND_.append([])
+        for a in tqdm(ALPHA_):
+            n_lo, n, n_hi = 0, N_MAX, N_MAX
+            while (n_hi - n_lo > 1):
+                n = (n_lo + n_hi) // 2
+                print(f"Currently trying n={n} (nlo={n_lo}, nhi={n_hi})")
+                # create dataset and train the model
+                xs, ys = get_points(N=n, alpha=a)
+                xs = jnp.einsum('ji,nj->ni', inflator, xs)
+                model = eqx.nn.MLP(**mlp_kwargs, in_size=d, key=mkey)
+                model = train_model(model, (xs, ys), n_epochs=EPOCHS)
+                # perform test on trained model
+                eps = error_fraction(model, alpha=a, inf=inflator)
+                n_is_sufficient = (eps < ERR_THRESHOLD)
+                # update n_lo and n_hi
+                n_hi = n if n_is_sufficient else n_hi
+                n_lo = n_lo if n_is_sufficient else n
+            ND_[-1].append(n_lo)
 
     # take sum across the vmapped evaluate_ensemble
-    plt.yscale('log')
-    plt.xscale('log')
-    plt.plot(ALPHA_, N_, '-o', markersize=3, label='empirical')
-    plt.step(ALPHA_, polygon(ALPHA_), label='polygon bound')
-    plt.step(ALPHA_, spherepack(ALPHA_), label='spack bound')
-    plt.title(f"N vs alpha, W={mlp_kwargs['width_size']}, 3D")
+    # plt.yscale('log')
+    # plt.xscale('log')
+    for d, nd in zip(D, ND_):
+        plt.plot(ALPHA_, nd, '-o', markersize=3, label=f'empirical, dim={d}')
+    plt.plot(XS:=jnp.linspace(ALPHA_[0], ALPHA_[-1], 1000), polygon(XS), label='polygon bound')
+    # plt.step(ALPHA_, spherepack(ALPHA_), label='spack bound')
+    plt.title(f"N vs alpha, eps={ERR_THRESHOLD}, W={mlp_kwargs['width_size']}, 3D")
     plt.xlabel(r"$R_M/r_m$")
     plt.ylabel("N")
     plt.legend()
