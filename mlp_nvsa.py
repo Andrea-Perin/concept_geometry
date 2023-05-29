@@ -63,13 +63,16 @@ def train_model(model, data, n_epochs=1000) -> eqx.nn.MLP:
     return model
 
 
-def error_fraction(model, alpha, N_TEST=int(1e5), inf=None):
-    """What fraction of the outer circle is misclassified by the model?"""
+def error_fraction(model, alpha, N_TEST=int(1e4), inf=None):
+    """What fraction of the inner/outer circle is misclassified?"""
     ts_ = jnp.linspace(0, 2*jnp.pi, N_TEST)
+    inner = jnp.stack((jnp.cos(ts_), jnp.sin(ts_)), axis=1)
     outer = alpha*jnp.stack((jnp.cos(ts_), jnp.sin(ts_)), axis=1)
     outer = jnp.einsum('ji,nj->ni', inf, outer)
-    preds = vmap(model)(outer)
-    return (preds < 0.5).mean()
+    inner = jnp.einsum('ji,nj->ni', inf, inner)
+    preds_inn = vmap(model)(inner)
+    preds_out = vmap(model)(outer)
+    return (preds_inn > 0.5).mean(), (preds_out < 0.5).mean()
 
 
 if __name__ == "__main__":
@@ -77,11 +80,13 @@ if __name__ == "__main__":
     rng = jrand.PRNGKey(SEED)
     rng, shufkey, mkey, ikey = jrand.split(rng, num=4)
     # params
-    ALPHA_ = 1 + jnp.linspace(0.1, 10, 15)/(1e3)
-    ERR_THRESHOLD = 0.05
+    RANDOM_PROJ = False
+    ALPHA_ = jnp.linspace(0, LOG_ALPHA_MAX:=jnp.log(1.1), (N_ALPHAS:=5)+1)[1:]
+    ALPHA_ = jnp.exp(ALPHA_)
+    ERR_THRESHOLD = 0  # 0.05
     EPOCHS = 1000
     N_MAX = 500
-    D = [2, 3, 8, 16]
+    D = [2, 3]  # , 8, 16]
     N_ = []
     # mlp params
     mlp_kwargs = dict(
@@ -93,13 +98,20 @@ if __name__ == "__main__":
 
     # bisection scheme for finding N at every ALPHA_
     ND_ = []
+    EPS_ = {d: {} for d in D}
     for d in tqdm(D):
         # inflator to larger dim
-        inflator = jrand.normal(ikey, shape=(2, d))
+        if RANDOM_PROJ:
+            # make projection noisy
+            inflator = jrand.normal(ikey, shape=(2, d))
+        else:
+            # just add fake dimensions
+            inflator = jnp.concatenate((jnp.eye(2), jnp.zeros((2, d-2))), axis=1)
         ND_.append([])
         for a in tqdm(ALPHA_):
-            n_lo, n, n_hi = 0, N_MAX, N_MAX
-            while (n_hi - n_lo > 1):
+            EPS_[d][float(a)] = {}
+            n_lo, n, n_hi = 0, N_MAX//2, N_MAX
+            while True:
                 n = (n_lo + n_hi) // 2
                 print(f"Currently trying n={n} (nlo={n_lo}, nhi={n_hi})")
                 # create dataset and train the model
@@ -108,21 +120,30 @@ if __name__ == "__main__":
                 model = eqx.nn.MLP(**mlp_kwargs, in_size=d, key=mkey)
                 model = train_model(model, (xs, ys), n_epochs=EPOCHS)
                 # perform test on trained model
-                eps = error_fraction(model, alpha=a, inf=inflator)
-                n_is_sufficient = (eps < ERR_THRESHOLD)
+                eps_inn, eps_out = error_fraction(model, alpha=a, inf=inflator)
+                EPS_[d][float(a)][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
+                print(f"Error fraction: inn={eps_inn:.3f}, out={eps_out:.3f}")
+                n_is_sufficient = (eps_inn <= ERR_THRESHOLD) and (eps_out <= ERR_THRESHOLD)
+                # exit condition
+                if (n == n_lo) and (not n_is_sufficient):
+                    n += 1
+                    break
+                if (n == n_hi) and (n_is_sufficient):
+                    break
                 # update n_lo and n_hi
                 n_hi = n if n_is_sufficient else n_hi
                 n_lo = n_lo if n_is_sufficient else n
-            ND_[-1].append(n_lo)
+            ND_[-1].append(n)
 
     # take sum across the vmapped evaluate_ensemble
-    # plt.yscale('log')
-    # plt.xscale('log')
+    plt.yscale('log')
+    plt.xscale('log')
     for d, nd in zip(D, ND_):
-        plt.plot(ALPHA_, nd, '-o', markersize=3, label=f'empirical, dim={d}')
-    plt.plot(XS:=jnp.linspace(ALPHA_[0], ALPHA_[-1], 1000), polygon(XS), label='polygon bound')
-    # plt.step(ALPHA_, spherepack(ALPHA_), label='spack bound')
-    plt.title(f"N vs alpha, eps={ERR_THRESHOLD}, W={mlp_kwargs['width_size']}, 3D")
+        plt.plot(ALPHA_, nd, '-o', markersize=3, label=f'empirical, dim={d}', alpha=.5)
+    XS = jnp.linspace(ALPHA_[0], ALPHA_[-1], 1000)
+    plt.plot(XS, polygon(XS), label='polygon bound')
+    plt.plot(XS, spherepack(XS), label='spack bound')
+    plt.title(f"N vs alpha, eps={ERR_THRESHOLD}, W={mlp_kwargs['width_size']}")
     plt.xlabel(r"$R_M/r_m$")
     plt.ylabel("N")
     plt.legend()
