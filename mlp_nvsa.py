@@ -9,7 +9,9 @@ import optax
 from jaxtyping import Array, Float, Int, PyTree
 from jax import numpy as jnp, vmap, jit, random as jrand, nn as jnn
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 from tqdm import tqdm
+from pathlib import Path
 
 
 def polygon(x):
@@ -81,12 +83,12 @@ if __name__ == "__main__":
     rng, shufkey, mkey, ikey = jrand.split(rng, num=4)
     # params
     RANDOM_PROJ = False
-    ALPHA_ = jnp.linspace(0, LOG_ALPHA_MAX:=jnp.log(1.1), (N_ALPHAS:=5)+1)[1:]
+    ALPHA_ = jnp.linspace(0, LOG_ALPHA_MAX:=jnp.log(1.1), (N_ALPHAS:=15)+1)[1:]
     ALPHA_ = jnp.exp(ALPHA_)
-    ERR_THRESHOLD = 0  # 0.05
-    EPOCHS = 1000
+    ERR_THRESHOLD = 0  #.05
+    EPOCHS = 2000
     N_MAX = 500
-    D = [2, 3]  # , 8, 16]
+    D = [2, 3, 8, 16]
     N_ = []
     # mlp params
     mlp_kwargs = dict(
@@ -106,7 +108,8 @@ if __name__ == "__main__":
             inflator = jrand.normal(ikey, shape=(2, d))
         else:
             # just add fake dimensions
-            inflator = jnp.concatenate((jnp.eye(2), jnp.zeros((2, d-2))), axis=1)
+            # inflator = jnp.concatenate((jnp.eye(2), jnp.zeros((2, d-2))), axis=1)
+            inflator = jnp.concatenate((jrand.orthogonal(ikey, 2), jnp.zeros((2, d-2))), axis=1)
         ND_.append([])
         for a in tqdm(ALPHA_):
             EPS_[d][float(a)] = {}
@@ -121,6 +124,7 @@ if __name__ == "__main__":
                 model = train_model(model, (xs, ys), n_epochs=EPOCHS)
                 # perform test on trained model
                 eps_inn, eps_out = error_fraction(model, alpha=a, inf=inflator)
+                del model
                 EPS_[d][float(a)][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
                 print(f"Error fraction: inn={eps_inn:.3f}, out={eps_out:.3f}")
                 n_is_sufficient = (eps_inn <= ERR_THRESHOLD) and (eps_out <= ERR_THRESHOLD)
@@ -142,9 +146,41 @@ if __name__ == "__main__":
         plt.plot(ALPHA_, nd, '-o', markersize=3, label=f'empirical, dim={d}', alpha=.5)
     XS = jnp.linspace(ALPHA_[0], ALPHA_[-1], 1000)
     plt.plot(XS, polygon(XS), label='polygon bound')
-    plt.plot(XS, spherepack(XS), label='spack bound')
+    # plt.plot(XS, spherepack(XS), label='spack bound')
     plt.title(f"N vs alpha, eps={ERR_THRESHOLD}, W={mlp_kwargs['width_size']}")
     plt.xlabel(r"$R_M/r_m$")
     plt.ylabel("N")
     plt.legend()
     plt.show()
+
+    # plot the errors
+    def plot_error_fracs(err_dict, D):
+        fig, ax = plt.subplots()
+        ax.set_xscale('log')
+        ax.set_xlabel('N')
+        ax.set_ylabel('error fraction')
+        ax.set_title(f'Errors vs. N (dim={D})')
+        alphas = sorted(err_dict.keys())
+        cmap = mpl.colormaps['viridis']
+        for idx, a in enumerate(alphas):
+            sorted_ns = sorted(err_dict[a].keys())
+            inns = [err_dict[a][s]['inn'] for s in sorted_ns]
+            outs = [err_dict[a][s]['out'] for s in sorted_ns]
+            col = cmap((idx+1)/len(alphas))
+            ax.plot(sorted_ns, inns, linestyle='-', color=col, alpha=0.5)
+            ax.plot(sorted_ns, outs, linestyle='-.', color=col, alpha=0.5)
+        sm = plt.cm.ScalarMappable(cmap='viridis', norm=mpl.colors.Normalize(vmin=alphas[0], vmax=alphas[-1]))
+        cb = fig.colorbar(sm)
+        cb.set_label('alphas')
+        line_inner = mpl.lines.Line2D([0], [0], label='inner circle error', linestyle='-', color='black')
+        line_outer = mpl.lines.Line2D([0], [0], label='outer circle error', linestyle='-.', color='black')
+        ax.legend(handles=[line_inner, line_outer])
+        return fig, ax
+
+    imgs_dir = Path(f'./imgs/test_ortho')
+    imgs_dir.mkdir(parents=True)
+    for d in EPS_:
+        fig, ax = plot_error_fracs(EPS_[d], d)
+        plt.tight_layout()
+        plt.savefig(imgs_dir / f'nvsa_{d}.png')
+
