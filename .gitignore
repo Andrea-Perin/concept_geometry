@@ -4,5 +4,8 @@
 *.pdf
 *.txt
 *.html
+
+# dirs
 __pycache__
 .DS_Store
+./experiments
