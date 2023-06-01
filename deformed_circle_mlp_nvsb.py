@@ -1,10 +1,16 @@
 """
 Training MLPs on a deformed circle task.
 """
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['XLA_FLAGS'] = '--xla_gpu_force_compilation_parallelism=1'
+
+
 import equinox as eqx
 import optax
 from jaxtyping import Array, Float, Int, PyTree
 from jax import numpy as jnp, vmap, jit, random as jrand, nn as jnn
+from numpy import zeros
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from tqdm import tqdm
@@ -90,26 +96,28 @@ if __name__ == "__main__":
     SEED = int(input("Insert seed (default: 0): ") or "0")
     rng = jrand.PRNGKey(SEED)
     rng, shufkey, mkey, ikey = jrand.split(rng, num=4)
-    # params
-    ALPHA = 1.01
-    BETAS = jnp.linspace(BETA_MIN := 1, BETA_MAX := 3, N_BETAS := 5)
-    ERR_THRESH = 0  # 0.05
-    EPOCHS = 100
-    N_MAX = 10
-    D = [2, ]  # 3, 8, 16]
-    N_ = []
+    #
+    # PARAMS
+    #
+    ALPHAS = [1.1, 1.05, 1.01]  # , 1.005, 1.001]
+    # betas need to be sqrt-ed (the ratio from the func get_deformer is actually beta**2)
+    BETAS = jnp.sqrt(jnp.linspace(BETA_MIN := 1, BETA_MAX := 10, N_BETAS := 10))
+    ERR_THRESH = 0.05
+    EPOCHS = 2000
+    N_MAX = 2000
+    D = [2, ]   # 3 , 8, 16]
     # mlp params
     mlp_kwargs = dict(
         out_size=1,
-        width_size=4096,
-        depth=1,
+        width_size=2048,
+        depth=2,
         final_activation=jnn.sigmoid
     )
 
     # CREATE RESULTS FOLDER
     EXP_PARAMS = {
         'seed': SEED,
-        'alpha': ALPHA,
+        'alpha': ALPHAS,
         'betas': BETAS.tolist(),
         'err_thresold': ERR_THRESH,
         'epochs': EPOCHS,
@@ -137,81 +145,93 @@ if __name__ == "__main__":
         json.dump(JSON_DATA, target, indent=4)
 
     # bisection scheme for finding N at every ALPHA_
-    ND_ = []
+    NDA_ = zeros((len(D), len(ALPHAS), len(BETAS)), dtype=int)
     EPS_ = {d: {} for d in D}
-    for d in tqdm(D):
-        ND_.append([])
-        for b in tqdm(BETAS):
-            b = float(b)
-            # create the deformer
-            deformer_core = get_deformer(ikey, b)
-            deformer = jnp.concatenate((deformer_core, jnp.zeros((2, d-2))), axis=1)
-            EPS_[d][b] = {}
-            n_lo, n, n_hi = 0, N_MAX//2, N_MAX
-            while True:
-                n = (n_lo + n_hi) // 2
-                print(f"Currently trying n={n} (nlo={n_lo}, nhi={n_hi})")
-                # create dataset and train the model
-                xs, ys = get_points(N=n, alpha=ALPHA)
-                xs = jnp.einsum('ji,nj->ni', deformer, xs)
-                model = eqx.nn.MLP(**mlp_kwargs, in_size=d, key=mkey)
-                model = train_model(model, (xs, ys), n_epochs=EPOCHS)
-                # perform test on trained model
-                eps_inn, eps_out = error_fraction(model, alpha=ALPHA, transf=deformer)
-                EPS_[d][b][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
-                print(f"Error fraction: inn={eps_inn:.3f}, out={eps_out:.3f}")
-                n_is_suff = (eps_inn <= ERR_THRESH) and (eps_out <= ERR_THRESH)
-                # exit condition
-                if (n == n_lo) and (not n_is_suff):
-                    n += 1
-                    break
-                if (n == n_hi) and (n_is_suff):
-                    break
-                # update n_lo and n_hi
-                n_hi = n if n_is_suff else n_hi
-                n_lo = n_lo if n_is_suff else n
-            ND_[-1].append(n)
+    for idd, d in enumerate(D):
+        for ida, a in enumerate(ALPHAS):
+            EPS_[d][a] = {}
+            for idb, b in enumerate(BETAS):
+                b = float(b)
+                # create the deformer
+                deformer_core = get_deformer(ikey, b)
+                deformer = jnp.concatenate((deformer_core, jnp.zeros((2, d-2))), axis=1)
+                EPS_[d][a][b] = {}
+                n_lo, n, n_hi = 0, N_MAX//2, N_MAX
+                while True:
+                    n = (n_lo + n_hi) // 2
+                    # create dataset and train the model
+                    xs, ys = get_points(N=n, alpha=a)
+                    xs = jnp.einsum('ji,nj->ni', deformer, xs)
+                    model = eqx.nn.MLP(**mlp_kwargs, in_size=d, key=mkey)
+                    model = train_model(model, (xs, ys), n_epochs=EPOCHS)
+                    # perform test on trained model
+                    eps_inn, eps_out = error_fraction(model, alpha=a, transf=deformer)
+                    del model  # maybe helps not crashing?
+                    EPS_[d][a][b][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
+                    print(f"n:{n},nlo:{n_lo},nhi:{n_hi},inn:{eps_inn:.3f},out:{eps_out:.3f}")
+                    n_is_suff = (eps_inn <= ERR_THRESH) and (eps_out <= ERR_THRESH)
+                    # exit condition
+                    if (n == n_lo) and (not n_is_suff):
+                        n += 1
+                        break
+                    if (n == n_hi) and (n_is_suff):
+                        break
+                    # update n_lo and n_hi
+                    n_hi = n if n_is_suff else n_hi
+                    n_lo = n_lo if n_is_suff else n
+                NDA_[idd, ida, idb] = n
 
     # save the relevant things
     with (experiment_dirname / "eps.json").open("w", encoding="UTF-8") as out:
         json.dump(EPS_, out, indent=4)
     with (experiment_dirname / "nd.json").open("w", encoding="UTF-8") as out:
-        json.dump(ND_, out, indent=4)
+        json.dump(NDA_.tolist(), out, indent=4)
 
     # take sum across the vmapped evaluate_ensemble
     fig, ax = plt.subplots()
     ax.set_yscale('log')
     ax.set_xscale('log')
-    for d, nd in zip(D, ND_):
-        ax.plot(BETAS, nd, '-o', markersize=3, label=f'empirical, dim={d}', alpha=.5)
-    XS = jnp.linspace(BETA_MIN, BETA_MAX, 1000)
-    ax.plot(XS, polygon(XS), label='polygon bound')
-    ax.set_title(f"N vs beta, eps={ERR_THRESH}, W={mlp_kwargs['width_size']}")
+    cmap = mpl.colormaps['viridis']
+    dims_centers = 1/(2*len(D)) + jnp.arange(len(D))
+    for didx, (d, cd) in enumerate(zip(D, dims_centers)):
+        alpha_color_cloud = cd + jnp.linspace(-1, 1, len(ALPHAS)) / (3*len(D))
+        for aidx, (a, ca) in enumerate(zip(ALPHAS, alpha_color_cloud)):
+            ax.plot(BETAS**2, NDA_[didx, aidx], linestyle='-', color=cmap(ca), alpha=0.5, label=f'dim={d}, alpha={a}')
+    # colorbar on the side
+    norm_colors = mpl.colors.Normalize(vmin=dims_centers[0], vmax=dims_centers[-1])
+    sm = plt.cm.ScalarMappable(cmap='viridis', norm=norm_colors)
+    cb = fig.colorbar(sm, ax=ax)
+    cb.set_label('alphas')
+    ax.set_title(f"N vs beta at various Ds, eps={ERR_THRESH}, W={mlp_kwargs['width_size']}")
     ax.set_xlabel(r"$\lambda_M/\lambda_m$")
     ax.set_ylabel("N")
     fig.legend()
     plt.savefig(experiment_dirname / 'nvsb.png')
 
     # plot the errors
-    def plot_error_fracs(err_dict, D):
+    def plot_error_fracs(whole_dict, d, a):
+        err_dict = whole_dict[d][a]
         fig, ax = plt.subplots()
         ax.set_xscale('log')
         ax.set_xlabel('N')
         ax.set_ylabel('error fraction')
-        ax.set_title(f'Errors vs. N (dim={D})')
-        betas = sorted(err_dict.keys())
+        ax.set_title(f'Errors vs. N (dim={d}, alpha={a})')
+        # color centroids on values of alpha
         cmap = mpl.colormaps['viridis']
-        for idx, b in enumerate(betas):
+        betas = sorted(err_dict.keys())
+        betas_centers = (.5 + jnp.arange(len(ALPHAS))) / len(ALPHAS)
+        for idxb, (b, bc) in enumerate(zip(betas, betas_centers)):
+            col = cmap(bc)
             sorted_ns = sorted(err_dict[b].keys())
-            inns = [err_dict[b][s]['inn'] for s in sorted_ns]
-            outs = [err_dict[b][s]['out'] for s in sorted_ns]
-            col = cmap((idx+1)/len(betas))
+            inns = [err_dict[b][n]['inn'] for n in sorted_ns]
+            outs = [err_dict[b][n]['out'] for n in sorted_ns]
             ax.plot(sorted_ns, inns, linestyle='-', color=col, alpha=0.5)
             ax.plot(sorted_ns, outs, linestyle='-.', color=col, alpha=0.5)
-        norm_colors = mpl.colors.Normalize(vmin=betas[0], vmax=betas[-1])
+        # rest of the plot
+        norm_colors = mpl.colors.Normalize(vmin=betas_centers[0], vmax=betas_centers[-1])
         sm = plt.cm.ScalarMappable(cmap='viridis', norm=norm_colors)
-        cb = fig.colorbar(sm, cax=ax)
-        cb.set_label('alphas')
+        cb = fig.colorbar(sm, ax=ax)
+        cb.set_label('betas')
         line_inner = mpl.lines.Line2D(
             [0], [0], label='inner circle error', linestyle='-', color='black')
         line_outer = mpl.lines.Line2D(
@@ -220,9 +240,10 @@ if __name__ == "__main__":
         return fig, ax
 
     for d in EPS_:
-        fig, ax = plot_error_fracs(EPS_[d], d)
-        plt.tight_layout()
-        plt.savefig(experiment_dirname / f'errors_{d}.png')
+        for a in ALPHAS:
+            fig, ax = plot_error_fracs(EPS_, d, a)
+            plt.tight_layout()
+            plt.savefig(experiment_dirname / f'errors_{d}_{a}.png')
 
     # LAST THING: SET THE EXPERIMENT AS COMPLETE
     experiment_dirname.rename(Path('./experiments') / fname)
