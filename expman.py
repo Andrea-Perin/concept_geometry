@@ -14,7 +14,8 @@ def get_current_hash():
 class ExpLogger:
     """Context manager to save experiments and save things."""
 
-    def __init__(self, dir=Path('./experiments')):
+    def __init__(self, dir=Path('./experiments'), zip=True):
+        self.zip = zip
         # simply collect metadata
         self.git_hash = get_current_hash()
         print(f"Current hash: {self.git_hash}")
@@ -38,4 +39,9 @@ class ExpLogger:
         # so we cleanup the whole directory in such case
         if exc_type is not None:
             shutil.rmtree(self.tmpdir)
+        else:
+            # zip the contents of the folder
+            if self.zip:
+                archname = self.tmpdir / 'results'
+                shutil.make_archive(archname, "zip", self.tmpdir)
         return True
