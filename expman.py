@@ -22,7 +22,7 @@ class ExpLogger:
         self.fname = Path(__main__.__file__).stem
         print(f"Current fname: {self.fname}")
         self.dt = datetime.today().strftime('%Y-%m-%d_%H:%M:%S')
-        self.tmpdir = dir / f"{self.fname}_{self.dt}"
+        self.tmpdir = dir / f"{self.fname}_{self.dt}" / "results"
         print(f"Saving in directory {self.tmpdir}")
         # make the tmpdir (with parents) if not exist
         # and save the metadata already
@@ -42,6 +42,5 @@ class ExpLogger:
         else:
             # zip the contents of the folder
             if self.zip:
-                archname = self.tmpdir / 'results'
-                shutil.make_archive(archname, "zip", self.tmpdir)
+                shutil.make_archive(self.tmpdir, "zip", self.tmpdir)
         return True
