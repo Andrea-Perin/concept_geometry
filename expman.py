@@ -11,6 +11,12 @@ def get_current_hash():
     return process.communicate()[0].strip().decode('utf-8')
 
 
+class Experiment(type(Path())):
+    def save_dict(self, obj, name):
+        with (self / name).open("w", encoding="UTF-8") as target:
+            json.dump(obj, target, indent=4)
+
+
 class ExpLogger:
     """Context manager to save experiments and save things."""
 
@@ -22,7 +28,7 @@ class ExpLogger:
         self.fname = Path(__main__.__file__).stem
         print(f"Current fname: {self.fname}")
         self.dt = datetime.today().strftime('%Y-%m-%d_%H:%M:%S')
-        self.tmpdir = dir / f"{self.fname}_{self.dt}" / "results"
+        self.tmpdir = Experiment(dir / f"{self.fname}_{self.dt}" / "results")
         print(f"Saving in directory {self.tmpdir}")
         # make the tmpdir (with parents) if not exist
         # and save the metadata already
@@ -38,9 +44,10 @@ class ExpLogger:
         # here we catch all exceptions as deadly
         # so we cleanup the whole directory in such case
         if exc_type is not None:
-            shutil.rmtree(self.tmpdir)
+            shutil.rmtree(self.tmpdir.parent)
+            return None
         else:
             # zip the contents of the folder
             if self.zip:
                 shutil.make_archive(self.tmpdir, "zip", self.tmpdir)
-        return True
+            return True
