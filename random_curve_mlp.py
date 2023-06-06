@@ -15,9 +15,49 @@ from expman import ExpLogger
 from numpy import empty
 
 
-# sample points uniformly from a circle
-def get_points(key, N, alpha, **kwargs):
+def plot_decision(model, alpha, pts_inn, pts_out, npts=100, mult=1.5):
+    """plotting function for the decision boundary of a 2D MLP"""
+    # plot decision boundary
+    pts = jnp.linspace(lo:=pts_out.min()*mult, hi:=pts_out.max()*mult, npts)
+    xv, yv = jnp.meshgrid(pts, pts)
+    pts = jnp.stack((xv, yv), axis=-1)
+    # prob of being in inner circle
+    preds = vmap(vmap(model))(pts).squeeze()
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.clear()
+    ax.set_aspect('equal')
+    ax.set_xlim([lo, hi])
+    ax.set_ylim([lo, hi])
+    title = ax.set_title(f"Decision boundary, alpha={alpha}, N={pts_inn.shape[0]}, width={model.width_size}")
+    # plot contours
+    avicii = jnp.linspace(0, 1, 11)
+    contourf = ax.contourf(xv, yv, preds, levels=avicii, vmin=0, vmax=1)
+    contour = ax.contour(xv, yv, preds, levels=avicii,
+                         vmin=0, vmax=1, colors='red', alpha=0.5)
+    # plot scatter points
+    inn = ax.scatter(*pts_inn.T, marker='x', color='black')
+    out = ax.scatter(*pts_out.T, marker='o', color='black')
+    # colormap
+    clabel = ax.clabel(contour, inline=True, fontsize=10, zorder=6)
+    cbar = plt.colorbar(contourf)
+    cbar.ax.set_ylabel("class. probability")
+    cbar.add_lines(contour)
+    return fig, ax
+
+
+# sample points uniformly from a random curve
+def get_points_random(key, N, alpha, **kwargs):
     inner = get_polar_loop(key, N, **kwargs)
+    outer = alpha * inner
+    pts = jnp.concatenate((inner, outer))
+    labs = jnp.concatenate((jnp.zeros(N), jnp.ones(N)))
+    return pts, labs
+
+
+# sample points uniformly from a random circle
+def get_points_circle(key, N, alpha, **kwargs):
+    ts = jnp.linspace(0, 2*jnp.pi, N)
+    inner = jnp.stack((jnp.cos(ts), jnp.sin(ts)), axis=1)
     outer = alpha * inner
     pts = jnp.concatenate((inner, outer))
     labs = jnp.concatenate((jnp.zeros(N), jnp.ones(N)))
@@ -60,7 +100,8 @@ if __name__ == "__main__":
     rng = jrand.PRNGKey(SEED)
     rng, mkey, dkey = jrand.split(rng, num=3)
     # params
-    ALPHA = [1.5, 1.2, 1.15, 1.1, 1.075, 1.05, 1.025, 1.01, 1.001]
+    # ALPHA = [1.5, 1.2, 1.15, 1.1, 1.075, 1.05, 1.025, 1.01, 1.001]
+    ALPHA = [1.5, 1.1, 1.075, 1.01]
     ERR_THRESHOLD = 0  #.05
     EPOCHS = 1000
     N_MAX = 1000
@@ -96,11 +137,11 @@ if __name__ == "__main__":
             while True:
                 n = (n_lo + n_hi) // 2
                 # create dataset and train the model
-                xs, ys = get_points(key=dkey, N=n, alpha=a)
+                xs, ys = get_points_random(key=dkey, N=n, alpha=a)
                 model = eqx.nn.MLP(**mlp_kwargs, in_size=2, key=mkey)
                 model = train_model(model, (xs, ys), n_epochs=EPOCHS)
                 # perform test on trained model, save errors
-                xs_test, ys_test = get_points(key=dkey, N=N_TEST, alpha=a)
+                xs_test, ys_test = get_points_random(key=dkey, N=N_TEST, alpha=a)
                 eps_inn = (vmap(model)(xs_test[:N_TEST]) > .5).mean()
                 eps_out = (vmap(model)(xs_test[N_TEST:]) < .5).mean()
                 EPS_[a][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
@@ -116,6 +157,10 @@ if __name__ == "__main__":
                 n_hi = n if n_is_sufficient else n_hi
                 n_lo = n_lo if n_is_sufficient else n
             N[ida] = n
+            # create plot with trained model on given data and save it
+            fig, ax = plot_decision(model, a, xs[:n], xs[n:])
+            plt.savefig(experiment / f"decision_{a}.png")
+            plt.close()
 
         # take sum across the vmapped evaluate_ensemble
         plt.yscale('log')
