@@ -15,6 +15,10 @@ from expman import ExpLogger
 from numpy import empty
 
 
+def polygon(x):
+    return jnp.ceil(jnp.pi/(jnp.arccos(1/x)))
+
+
 def plot_decision(model, alpha, pts_inn, pts_out, npts=100, mult=1.5):
     """plotting function for the decision boundary of a 2D MLP"""
     # plot decision boundary
@@ -100,13 +104,14 @@ if __name__ == "__main__":
     rng = jrand.PRNGKey(SEED)
     rng, mkey, dkey = jrand.split(rng, num=3)
     # params
-    # ALPHA = [1.5, 1.2, 1.15, 1.1, 1.075, 1.05, 1.025, 1.01, 1.001]
-    ALPHA = [1.5, 1.1, 1.075, 1.01]
+    ALPHA = [1.5, 1.2, 1.15, 1.1, 1.075, 1.05, 1.025, 1.01]
+    # ALPHA = [1.5, 1.1, 1.075, 1.01]
     ERR_THRESHOLD = 0  #.05
-    EPOCHS = 1000
-    N_MAX = 1000
+    EPOCHS = 2000
+    N_MAX = 4000
     N_TEST = int(1e4)
-    N = empty(len(ALPHA))
+    N_RAND = empty(len(ALPHA))
+    N_CIRC = empty(len(ALPHA))
     # mlp params
     mlp_kwargs = dict(
         out_size=1,
@@ -131,8 +136,10 @@ if __name__ == "__main__":
         experiment.save_dict(PARAMS_DICT, 'params.json')
 
         # run experiment
-        EPS_ = {a: {} for a in ALPHA}
+        EPS_RAND = {a: {} for a in ALPHA}
+        EPS_CIRC = {a: {} for a in ALPHA}
         for ida, a in enumerate(ALPHA):
+            # random curve case
             n_lo, n, n_hi = 0, N_MAX//2, N_MAX
             while True:
                 n = (n_lo + n_hi) // 2
@@ -144,7 +151,7 @@ if __name__ == "__main__":
                 xs_test, ys_test = get_points_random(key=dkey, N=N_TEST, alpha=a)
                 eps_inn = (vmap(model)(xs_test[:N_TEST]) > .5).mean()
                 eps_out = (vmap(model)(xs_test[N_TEST:]) < .5).mean()
-                EPS_[a][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
+                EPS_RAND[a][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
                 print(f"n:{n},nlo:{n_lo},nhi:{n_hi},inn:{eps_inn:.3f},out:{eps_out:.3f}")
                 n_is_sufficient = (eps_inn <= ERR_THRESHOLD) and (eps_out <= ERR_THRESHOLD)
                 # exit condition
@@ -156,16 +163,47 @@ if __name__ == "__main__":
                 # update n_lo and n_hi
                 n_hi = n if n_is_sufficient else n_hi
                 n_lo = n_lo if n_is_sufficient else n
-            N[ida] = n
+            N_RAND[ida] = n
             # create plot with trained model on given data and save it
             fig, ax = plot_decision(model, a, xs[:n], xs[n:])
-            plt.savefig(experiment / f"decision_{a}.png")
+            plt.savefig(experiment / f"randcurve_decision_{a}.png")
+            plt.close()
+            # circle case
+            n_lo, n, n_hi = 0, N_MAX//2, N_MAX
+            while True:
+                n = (n_lo + n_hi) // 2
+                # create dataset and train the model
+                xs, ys = get_points_circle(key=dkey, N=n, alpha=a)
+                model = eqx.nn.MLP(**mlp_kwargs, in_size=2, key=mkey)
+                model = train_model(model, (xs, ys), n_epochs=EPOCHS)
+                # perform test on trained model, save errors
+                xs_test, ys_test = get_points_circle(key=dkey, N=N_TEST, alpha=a)
+                eps_inn = (vmap(model)(xs_test[:N_TEST]) > .5).mean()
+                eps_out = (vmap(model)(xs_test[N_TEST:]) < .5).mean()
+                EPS_CIRC[a][n] = {'inn': float(eps_inn), 'out': float(eps_out)}
+                print(f"n:{n},nlo:{n_lo},nhi:{n_hi},inn:{eps_inn:.3f},out:{eps_out:.3f}")
+                n_is_sufficient = (eps_inn <= ERR_THRESHOLD) and (eps_out <= ERR_THRESHOLD)
+                # exit condition
+                if (n == n_lo) and (not n_is_sufficient):
+                    n += 1
+                    break
+                if (n == n_hi) and (n_is_sufficient):
+                    break
+                # update n_lo and n_hi
+                n_hi = n if n_is_sufficient else n_hi
+                n_lo = n_lo if n_is_sufficient else n
+            N_CIRC[ida] = n
+            # create plot with trained model on given data and save it
+            fig, ax = plot_decision(model, a, xs[:n], xs[n:])
+            plt.savefig(experiment / f"circ_decision_{a}.png")
             plt.close()
 
         # take sum across the vmapped evaluate_ensemble
         plt.yscale('log')
         plt.xscale('log')
-        plt.plot(ALPHA, N, label='experimental')
+        plt.plot(ALPHA, N_RAND, label='random curve')
+        plt.plot(ALPHA, N_CIRC, label='circle')
+        plt.plot(XS:=jnp.linspace(1, 1.5, 1000), polygon(XS), label='theory')
         plt.title(f"N vs alpha, eps={ERR_THRESHOLD}, W={mlp_kwargs['width_size']}")
         plt.xlabel(r"$R_M/r_m$")
         plt.ylabel("N")
@@ -198,5 +236,9 @@ if __name__ == "__main__":
             ax.legend(handles=[linner, louter])
             return fig, ax
 
-        fig, ax = plot_error_fracs(EPS_)
-        plt.savefig(experiment/'errors.png')
+        fig, ax = plot_error_fracs(EPS_RAND)
+        plt.savefig(experiment/'errors_rand.png')
+        plt.close()
+        fig, ax = plot_error_fracs(EPS_CIRC)
+        plt.savefig(experiment/'errors_circ.png')
+        plt.close()
