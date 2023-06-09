@@ -35,7 +35,7 @@ def get_polar_loop(key, N, H=5, rmin=-2.5, rmax=-.5):
     rho = (rp[:H] * jnp.logspace(rmin, rmax, H))[:, None]
     phi = (rp[H:] * 2 * jnp.pi)[:, None]
     # accumulation step
-    ts = jnp.linspace(0, 2*jnp.pi, N)
+    ts = jnp.linspace(0, 2*jnp.pi, N+1)[:-1]
     hs = jnp.arange(1, H+1)[:, None]
     thetas = jnp.sin(hs*ts + phi)
     r = 1 + (rho*thetas).sum(axis=0)
@@ -49,3 +49,8 @@ def get_dataset(key, N, alpha, **kwargs):
     xs = jnp.concatenate((inner, outer))
     ys = jnp.concatenate((jnp.zeros(N), jnp.ones(N)))
     return xs, ys
+
+
+if __name__ == "__main__":
+    rng = jrand.PRNGKey(0)
+    print(get_polar_loop(rng, 2, H=0))
