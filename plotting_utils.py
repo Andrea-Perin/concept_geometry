@@ -11,7 +11,8 @@ def polygon(x):
 def plot_decision(model, alpha, pts_inn, pts_out, npts=100, mult=1.5):
     """plotting function for the decision boundary of a 2D MLP"""
     # plot decision boundary
-    pts = jnp.linspace(lo:=pts_out.min()*mult, hi:=pts_out.max()*mult, npts)
+    pts = jnp.linspace(lo := pts_out.min()*mult,
+                       hi := pts_out.max()*mult, npts)
     xv, yv = jnp.meshgrid(pts, pts)
     pts = jnp.stack((xv, yv), axis=-1)
     # prob of being in inner circle
@@ -21,17 +22,18 @@ def plot_decision(model, alpha, pts_inn, pts_out, npts=100, mult=1.5):
     ax.set_aspect('equal')
     ax.set_xlim([lo, hi])
     ax.set_ylim([lo, hi])
-    title = ax.set_title(f"Decision boundary, alpha={alpha}, N={pts_inn.shape[0]}")
+    tit = f"Decision boundary, alpha={alpha}, N={pts_inn.shape[0]}"
+    ax.set_title(tit)
     # plot contours
     avicii = jnp.linspace(0, 1, 11)
     contourf = ax.contourf(xv, yv, preds, levels=avicii, vmin=0, vmax=1)
     contour = ax.contour(xv, yv, preds, levels=avicii,
                          vmin=0, vmax=1, colors='red', alpha=0.5)
     # plot scatter points
-    inn = ax.scatter(*pts_inn.T, marker='x', color='black')
-    out = ax.scatter(*pts_out.T, marker='o', color='black')
+    ax.scatter(*pts_inn.T, marker='x', color='black')
+    ax.scatter(*pts_out.T, marker='o', color='black')
     # colormap
-    clabel = ax.clabel(contour, inline=True, fontsize=10, zorder=6)
+    ax.clabel(contour, inline=True, fontsize=10, zorder=6)
     cbar = plt.colorbar(contourf)
     cbar.ax.set_ylabel("class. probability")
     cbar.add_lines(contour)
@@ -84,7 +86,7 @@ def plot_n_alpha(alphas, ns, err, width):
     ax.set_title('N vs alpha')
     # take sum across the vmapped evaluate_ensemble
     ax.plot(alphas, ns, label='empirical')
-    ax.plot(XS:=jnp.linspace(1, 1.5, 1000), polygon(XS), label='theory')
+    ax.plot(XS := jnp.linspace(1, 1.5, 1000), polygon(XS), label='theory')
     ax.set_title(f"N vs alpha, eps={err}, W={width}")
     ax.set_xlabel(r"$R_M/r_m$")
     ax.set_ylabel("N")
