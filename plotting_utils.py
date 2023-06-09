@@ -41,7 +41,8 @@ def plot_decision(model, alpha, pts_inn, pts_out, npts=100, mult=1.5):
 def plot_loss(losses, a):
     fig, ax = plt.subplots()
     ax.clear()
-    ax.plot(jnp.arange(len(losses)), losses, '-o')
+    batches = jnp.arange(len(losses))
+    ax.plot(batches, losses, '-o', label='batch losses')
     ax.set_xlabel('Batch number')
     ax.set_ylabel('Loss')
     ax.set_title(f"Loss trajectory, alpha={a:.3f}")

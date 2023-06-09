@@ -46,8 +46,7 @@ def train_model(model, dloader, optimizer, *, key):
         model, opt_state, loss = make_step(model, opt_state, xs, ys, key=tkey)
         losses.append(loss)
     # put the trained model in eval mode
-    model = eqx.tree_inference(model, value=True)
-    model = eqx.Partial(model, key=jrand.PRNGKey(0))
+    model = eqx.Partial(eqx.tree_inference(model, value=True), key=key)
     return model, losses
 
 
@@ -62,8 +61,11 @@ with ExpLogger() as experiment:
               'width_size': 2048,
               'pdrop': 0.1, },
         # OPTIMIZER STUFF
-        schedule=optax.cosine_decay_schedule,
-        schedule_params={'init_value': 1e-3,
+        schedule=optax.warmup_cosine_decay_schedule,
+        schedule_params={'init_value': 1e-4,
+                         'peak_value': 5e-3,
+                         'warmup_steps': 50,
+                         'end_value': 1e-6,
                          'decay_steps': 1000, },
         clipper=optax.clip,
         clipper_params={'max_delta': 2.0},
@@ -75,13 +77,13 @@ with ExpLogger() as experiment:
         # DATASET PARAMS
         dset_params={'H': 5,
                      'rmin': -3,
-                     'rmax': -2, },
+                     'rmax': -1.5, },
         # EXPERIMENTAL PARAMS
-        alpha=[1.1, 1.25, 1.5],
+        alpha=[1.005, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07, 1.08, 1.09, 1.1, 1.15, 1.25, 1.5],
         err_threshold=0,
         # OTHER
         n_test=int(1e4),
-        n_max=1000,
+        n_max=4000,
     )
 
     # some aliases for shorter code
@@ -95,6 +97,7 @@ with ExpLogger() as experiment:
     RESULTS = dict(
         N=zeros(len(ALPHAS), dtype=int),
         ERRORS={a: {} for a in ALPHAS},
+        LOSSES=[],
     )
 
     # prepare the optimizer
@@ -144,6 +147,7 @@ with ExpLogger() as experiment:
 
         # collect results and produce output
         RESULTS['N'][ida] = n
+        RESULTS['LOSSES'].append(losses)
         # create plot with trained model on given data and save it
         fig, ax = plot_decision(model, a, dset[0][:n], dset[0][n:])
         plt.savefig(experiment / f"decision_{a:.3f}.png")
