@@ -12,10 +12,11 @@ import equinox as eqx
 import optax
 import matplotlib.pyplot as plt
 from functools import partial
+from operator import add, mul
 
 from numpy import zeros
 
-from dataset_utils import dataloader, get_dataset
+from dataset_utils import dataloader, get_dataset, get_shifted_signal, get_polar_loop
 from model_utils import StupidMLP
 from plotting_utils import plot_decision, plot_loss, plot_error_fracs, plot_n_alpha
 
@@ -56,9 +57,9 @@ with ExpLogger() as experiment:
     PARAMS = dict(
         seed=int(input("Insert random seed (default: 0): ") or "0"),
         # NETWORK ARCHITECTURE
-        arch={'in_size': 2,
+        arch={'in_size': (D:=5),
               'out_size': 1,
-              'width_size': 2048,
+              'width_size': 512,
               'pdrop': 0.1, },
         # OPTIMIZER STUFF
         schedule=optax.warmup_cosine_decay_schedule,
@@ -72,12 +73,11 @@ with ExpLogger() as experiment:
         optimizer=optax.adamw,
         optimizer_params={},
         # DLOADER PARAMS
-        dloader_params={'batch_size': 512,
+        dloader_params={'batch_size': 128,
                         'n_epochs': 2000, },
         # DATASET PARAMS
-        dset_params={'H': 5,
-                     'rmin': -3,
-                     'rmax': -1.5, },
+        dset_func=get_shifted_signal,
+        dset_params={'d': D, },
         # EXPERIMENTAL PARAMS
         alpha=[1.005, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07, 1.08, 1.09, 1.1, 1.15, 1.25, 1.5],
         err_threshold=0,
@@ -92,6 +92,7 @@ with ExpLogger() as experiment:
     ALPHAS = PARAMS['alpha']
     ERR = PARAMS['err_threshold']
     WIDTH = PARAMS['arch']['width_size']
+    DSET = PARAMS['dset_func']
 
     # prepare the storage of results
     RESULTS = dict(
@@ -115,17 +116,22 @@ with ExpLogger() as experiment:
     dkey, skey, mkey, tkey = jrand.split(rng, num=4)
     # start looping over alphas
     for ida, a in enumerate(ALPHAS):
+        # the dataset transformation
+        transf = partial(add, a*jnp.eye(D)[0])
         # random curve case
         n_lo, n, n_hi = 1, N_MAX//2, N_MAX
         while True:
             n = (n_lo + n_hi) // 2
             # create dataset and train the model
-            dset = get_dataset(dkey, n, a, **PARAMS['dset_params'])
+            inn = DSET(dkey, n, **PARAMS['dset_params'])
+            dset = get_dataset(inn, transf)
             dload = dataloader(dset, **PARAMS['dloader_params'], skey=skey)
+            # train the model on the data
             model = StupidMLP(**PARAMS['arch'], key=mkey)
             model, losses = train_model(model, dload, optimizer, key=tkey)
             # perform test on trained model, save errors
-            testset, _ = get_dataset(dkey, N_TEST, a, **PARAMS['dset_params'])
+            inn = DSET(dkey, N_TEST, **PARAMS['dset_params'])
+            testset, _ = get_dataset(inn, transf)
             inn, out = testset[:N_TEST], testset[N_TEST:]
             eps_inn = float((vmap(model)(inn) > .5).mean())
             eps_out = float((vmap(model)(out) < .5).mean())
@@ -148,10 +154,11 @@ with ExpLogger() as experiment:
         # collect results and produce output
         RESULTS['N'][ida] = n
         RESULTS['LOSSES'].append(losses)
-        # create plot with trained model on given data and save it
-        fig, ax = plot_decision(model, a, dset[0][:n], dset[0][n:])
-        plt.savefig(experiment / f"decision_{a:.3f}.png")
-        plt.close()
+        if PARAMS['arch']['in_size'] == 2:
+            # create plot with trained model on given data and save it
+            fig, ax = plot_decision(model, a, dset[0][:n], dset[0][n:])
+            plt.savefig(experiment / f"decision_{a:.3f}.png")
+            plt.close()
         # create plot with loss progression on latest model and save iter
         fig, ax = plot_loss(losses, a)
         plt.savefig(experiment / f"losses_{a:.3f}.png")
@@ -163,7 +170,7 @@ with ExpLogger() as experiment:
     plt.close()
 
     # plot the final N vs alpha
-    fig, ax = plot_n_alpha(ALPHAS, RESULTS['N'], ERR, WIDTH)
+    fig, ax = plot_n_alpha(ALPHAS, RESULTS['N'], ERR, WIDTH, poly=False)
     plt.savefig(experiment / 'n_vs_a.png')
     plt.close()
 
@@ -175,5 +182,6 @@ with ExpLogger() as experiment:
     PARAMS['schedule'] = PARAMS['schedule'].__name__
     PARAMS['clipper'] = PARAMS['clipper'].__name__
     PARAMS['optimizer'] = PARAMS['optimizer'].__name__
+    PARAMS['dset_func'] = PARAMS['dset_func'].__name__
     # NOW save it :3
     experiment.save_dict(PARAMS, 'params.json')

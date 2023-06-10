@@ -77,7 +77,7 @@ def plot_error_fracs(err_dict):
     return fig, ax
 
 
-def plot_n_alpha(alphas, ns, err, width):
+def plot_n_alpha(alphas, ns, err, width, poly=False):
     fig, ax = plt.subplots()
     ax.set_xscale('log')
     ax.set_yscale('log')
@@ -86,7 +86,8 @@ def plot_n_alpha(alphas, ns, err, width):
     ax.set_title('N vs alpha')
     # take sum across the vmapped evaluate_ensemble
     ax.plot(alphas, ns, label='empirical')
-    ax.plot(XS := jnp.linspace(1, 1.5, 1000), polygon(XS), label='theory')
+    if poly:
+        ax.plot(XS := jnp.linspace(1, max(alphas), 1000), polygon(XS), label='theory')
     ax.set_title(f"N vs alpha, eps={err}, W={width}")
     ax.set_xlabel(r"$R_M/r_m$")
     ax.set_ylabel("N")

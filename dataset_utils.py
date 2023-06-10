@@ -1,4 +1,5 @@
-from jax import numpy as jnp, random as jrand
+from jax import numpy as jnp, random as jrand, vmap
+from functools import partial
 
 
 # dataloade  to perform batching
@@ -27,6 +28,8 @@ def dataloader(dataset, n_epochs, batch_size, *, skey):
 
 
 # DATASETS
+
+# CIRCLES AND DEFORMED CIRCLES
 def get_polar_loop(key, N, H=5, rmin=-2.5, rmax=-.5):
     """Sample H harmonics and add them to a fixed radius of 1. For H=0, the
     standard circle is recovered."""
@@ -43,9 +46,23 @@ def get_polar_loop(key, N, H=5, rmin=-2.5, rmax=-.5):
     return jnp.stack((r*jnp.cos(ts), r*jnp.sin(ts)), axis=1)
 
 
-def get_dataset(key, N, alpha, **kwargs):
-    inner = get_polar_loop(key, N, **kwargs)
-    outer = alpha*inner
+# ORBIT OF SHIFT GROUP
+def shifter(dx, d):
+    return jnp.exp(dx*1j*jnp.arange((d+1)//2)*(2*jnp.pi))
+
+
+def get_shifted_signal(key, N, d):
+    # signal itself
+    x0 = jrand.randint(key, shape=(d,), minval=0, maxval=2)
+    x0_hat = jnp.fft.rfft(x0)
+    shifts = vmap(partial(shifter, d=d))(jnp.linspace(0, 1, N))
+    return vmap(partial(jnp.fft.irfft, n=d))(shifts*x0_hat)
+
+
+# ACTUAL DATASETS
+def get_dataset(inner, transf):
+    N = len(inner)
+    outer = transf(inner)
     xs = jnp.concatenate((inner, outer))
     ys = jnp.concatenate((jnp.zeros(N), jnp.ones(N)))
     return xs, ys
