@@ -1,15 +1,47 @@
 """Trying out learning curves on a sine curve on a circle."""
+from tqdm import tqdm
 from jax import numpy as jnp, random as jrand, vmap, nn as jnn
 from numpy import zeros
 import equinox as eqx
 import optax
 import matplotlib.pyplot as plt
-from functools import partial
+import matplotlib as mpl
 
 from dataset_utils import dataloader, get_dataset, get_shifted_signal, get_polar_loop
-from model_utils import StupidMLP
 
 from expman import ExpLogger
+
+
+def plot_decision(model, pts_inn, pts_out, npts=100, mult=1.5):
+    """plotting function for the decision boundary of a 2D MLP"""
+    # plot decision boundary
+    pts = jnp.linspace(lo := pts_out.min()*mult,
+                       hi := pts_out.max()*mult, npts)
+    xv, yv = jnp.meshgrid(pts, pts)
+    pts = jnp.stack((xv, yv), axis=-1)
+    # prob of being in inner circle
+    preds = vmap(vmap(model))(pts).squeeze()
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.clear()
+    ax.set_aspect('equal')
+    ax.set_xlim([lo, hi])
+    ax.set_ylim([lo, hi])
+    tit = f"Decision boundary, N={pts_inn.shape[0]}"
+    ax.set_title(tit)
+    # plot contours
+    avicii = jnp.linspace(0, 1, 11)
+    contourf = ax.contourf(xv, yv, preds, levels=avicii, vmin=0, vmax=1)
+    contour = ax.contour(xv, yv, preds, levels=avicii,
+                         vmin=0, vmax=1, colors='red', alpha=0.5)
+    # plot scatter points
+    ax.scatter(*pts_inn.T, marker='x', color='black')
+    ax.scatter(*pts_out.T, marker='o', color='black')
+    # colormap
+    ax.clabel(contour, inline=True, fontsize=10, zorder=6)
+    cbar = plt.colorbar(contourf)
+    cbar.ax.set_ylabel("class. probability")
+    cbar.add_lines(contour)
+    return fig, ax
 
 
 def sine_on_circle(N, f: int, a: float = .25):
@@ -52,8 +84,8 @@ with ExpLogger() as experiment:
         # NETWORK ARCHITECTURE
         arch={'in_size': (D := 2),
               'out_size': 1,
-              'width_size': 2048,
-              'depth': 1,
+              'width_size': 256,
+              'depth': 2,
               'final_activation': jnn.sigmoid},
         # OPTIMIZER STUFF
         schedule=optax.warmup_cosine_decay_schedule,
@@ -67,13 +99,13 @@ with ExpLogger() as experiment:
         optimizer=optax.adam,
         optimizer_params={},
         # DLOADER PARAMS
-        dloader_params={'batch_size': 128,
+        dloader_params={'batch_size': 16,
                         'n_epochs': 5000, },
         # EXPERIMENTAL PARAMS
         # alphas=[1.0001, 1.0005, 1.001, 1.002, 1.003, 1.004, 1.005],
-        alphas=[1.1, 1.5],
-        freqs=list(range(2, 3)),
-        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=3, NN:=2).astype(int)).tolist(),
+        alphas=[1.1,],
+        freqs=list(range(2, 8)),
+        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2.5, NN:=10).astype(int)).tolist(),
         # OTHER
         n_test=int(1e4),
     )
@@ -88,7 +120,7 @@ with ExpLogger() as experiment:
     # prepare the storage of results
     res_shape = (len(ALPHAS), len(FREQS), len(ENN))
     RESULTS = dict(
-        ERRORS=zeros((*res_shape, 2)),
+        ERRORS=zeros((*res_shape, 4)),
         LOSSES=[],
     )
 
@@ -105,11 +137,11 @@ with ExpLogger() as experiment:
     rng = jrand.PRNGKey(PARAMS['seed'])
     dkey, skey, mkey, tkey = jrand.split(rng, num=4)
     # start looping over alphas, freqs and Ns
-    for ida, a in enumerate(ALPHAS):
+    for ida, a in enumerate(tqdm(ALPHAS)):
         RESULTS['LOSSES'].append([])
-        for idf, f in enumerate(FREQS):
+        for idf, f in enumerate(tqdm(FREQS)):
             RESULTS['LOSSES'][-1].append([])
-            for idn, n in enumerate(ENN):
+            for idn, n in enumerate(tqdm(ENN)):
                 # create dataset
                 inn = sine_on_circle(n, f)
                 out = inn * a
@@ -124,10 +156,49 @@ with ExpLogger() as experiment:
                 test_out = test_inn * a
                 test_set = jnp.concatenate((test_inn, test_out))
                 err_inn = float((vmap(model)(test_inn) > .5).mean())
-                err_out = float((vmap(model)(test_inn) > .5).mean())
+                err_out = float((vmap(model)(test_out) < .5).mean())
+                # store errors of training dataset
+                train_err_inn = float((vmap(model)(inn) > .5).mean())
+                train_err_out = float((vmap(model)(out) < .5).mean())
                 # store results
-                RESULTS['ERRORS'][ida, idf, idn] = (err_inn, err_out)
+                results = (err_inn, err_out, train_err_inn, train_err_out)
+                RESULTS['ERRORS'][ida, idf, idn] = results
                 RESULTS['LOSSES'][-1].append(losses)
+                # plot decision boundary
+                fig, ax = plot_decision(model, inn, out)
+                plt.savefig(experiment / f'decision_{n}.png')
+                plt.close()
+
+    # some plotting
+    def plot_errors(errors):
+        fig, ax = plt.subplots()
+        ax.set_xscale('log')
+        ax.set_xlabel('Number of samples')
+        ax.set_ylabel('Error fraction')
+        cmap = mpl.colormaps.get_cmap('cividis')
+        colors = [cmap(i) for i in jnp.linspace(0, 1, len(errors))]
+        inn, out = errors[..., 0], errors[..., 1]
+        for e_in, e_out, c in zip(inn, out, colors):
+            ax.plot(ENN, e_in, '-', c=c)
+            ax.plot(ENN, e_out, '--', c=c)
+        # for colorbar
+        normer = plt.Normalize(vmin=FREQS[0], vmax=FREQS[-1])
+        sm = mpl.cm.ScalarMappable(cmap=cmap, norm=normer)
+        fig.colorbar(sm, ax=ax, label='frequency')
+        # for legend
+        lcargs = dict(linestyle='-', color='black')
+        linner = mpl.lines.Line2D([0], [0], label='inner error', **lcargs)
+        lcargs = dict(linestyle='--', color='black')
+        louter = mpl.lines.Line2D([0], [0], label='outer error', **lcargs)
+        ax.legend(handles=[linner, louter])
+        return fig, ax
+
+    fig, ax = plot_errors(RESULTS['ERRORS'][0, ..., :2])
+    plt.savefig(experiment / 'errors_test.png')
+    plt.close()
+    fig, ax = plot_errors(RESULTS['ERRORS'][0, ..., 2:])
+    plt.savefig(experiment / 'errors_train.png')
+    plt.close()
 
     # and conclude by saving the RESULTS
     RESULTS['ERRORS'] = RESULTS['ERRORS'].tolist()
