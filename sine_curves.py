@@ -13,6 +13,37 @@ from dataset_utils import dataloader
 from expman import ExpLogger
 
 
+class PMLP(eqx.Module):
+    w1: jax.Array
+    b1: jax.Array
+    w2: jax.Array
+    b2: jax.Array
+    w3: jax.Array
+    b3: jax.Array
+
+    def __init__(self, in_size, out_size, width_size, n, key):
+        width = width_size
+        w1k, b1k, w2k, b2k, w3k, b3k = jrand.split(key, 6)
+        lim1 = 1 / jnp.sqrt(in_size)
+        self.w1 = jrand.uniform(w1k, (n, width, in_size), minval=-lim1, maxval=lim1)
+        self.b1 = jrand.uniform(b1k, (n, width), minval=-lim1, maxval=lim1)
+        lim2 = 1 / jnp.sqrt(width)
+        self.w2 = jrand.uniform(w2k, (n, width, width), minval=-lim2, maxval=lim2)
+        self.b2 = jrand.uniform(b2k, (n, width), minval=-lim2, maxval=lim2)
+        lim3 = 1 / jnp.sqrt(width)
+        self.w3 = jrand.uniform(w3k, (n, out_size, width), minval=-lim3, maxval=lim3)
+        self.b3 = jrand.uniform(b3k, (n, out_size), minval=-lim3, maxval=lim3)
+
+    def __call__(self, x):
+        x = self.b1 + jnp.einsum('nwi,i->nw', self.w1, x)
+        x = jnn.relu(x)
+        x = self.b2 + jnp.einsum('nwi,ni->nw', self.w2, x)
+        x = jnn.relu(x)
+        x = self.b3 + jnp.einsum('now,nw->no', self.w3, x)
+        x = vmap(jnn.sigmoid)(x)
+        return x
+
+
 def plot_decision(model, pts_inn, pts_out, npts=100, mult=2):
     """plotting function for the decision boundary of a 2D MLP"""
     # plot decision boundary
@@ -55,10 +86,14 @@ def sine_on_circle(N, f: int, a: float = .25, *, key=None):
 
 
 # training function
+def ce(y, y_pred):
+    return -jnp.mean(y*jnp.log(y_pred) + (1-y)*jnp.log(1-y_pred))
+
+
 @eqx.filter_value_and_grad
 def loss(model, x, y):
-    pred_y = vmap(model)(x).squeeze()
-    return -jnp.mean(y*jnp.log(pred_y) + (1-y)*jnp.log(1-pred_y))
+    y_preds = vmap(model)(x)
+    return jnp.sum(vmap(ce, in_axes=(None, 0))(y, y_preds))
 
 
 @eqx.filter_jit
@@ -87,9 +122,10 @@ with ExpLogger() as experiment:
         # NETWORK ARCHITECTURE
         arch={'in_size': (D := 2),
               'out_size': 1,
-              'width_size': 256,
-              'depth': 2,
-              'final_activation': jnn.sigmoid},
+              'width_size': 128,
+              'n': 10,
+              # 'final_activation': jnn.sigmoid
+              },
         # OPTIMIZER STUFF
         schedule=optax.warmup_cosine_decay_schedule,
         schedule_params={'init_value': 1e-4,
@@ -107,8 +143,8 @@ with ExpLogger() as experiment:
         # EXPERIMENTAL PARAMS
         # alphas=[1.0001, 1.0005, 1.001, 1.002, 1.003, 1.004, 1.005],
         alphas=[1.1,],
-        freqs=[4, 5, 6, 7],
-        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=10).astype(int)).tolist(),
+        freqs=[4, 5,],
+        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=5).astype(int)).tolist(),
         # OTHER
         n_test=int(1e4),
     )
@@ -119,9 +155,10 @@ with ExpLogger() as experiment:
     ALPHAS = PARAMS['alphas']
     ENN = PARAMS['ns']
     WIDTH = PARAMS['arch']['width_size']
+    PPP = PARAMS['arch']['n']
 
     # prepare the storage of results
-    res_shape = (len(ALPHAS), len(FREQS), len(ENN))
+    res_shape = (len(ALPHAS), len(FREQS), len(ENN), PPP)
     RESULTS = dict(
         ERRORS=zeros((*res_shape, 4)),
         LOSSES=[],
@@ -152,25 +189,25 @@ with ExpLogger() as experiment:
                 dset = (jnp.concatenate((inn, out)), labs)
                 dload = dataloader(dset, **PARAMS['dloader_params'], skey=skey)
                 # train the model on the data
-                model = eqx.nn.MLP(**PARAMS['arch'], key=mkey)
+                model = PMLP(**PARAMS['arch'], key=mkey)
                 model, losses = train_model(model, dload, optimizer)
                 # perform test on trained model, save errors
                 test_inn = sine_on_circle(N_TEST, f)
                 test_out = test_inn * a
-                test_set = jnp.concatenate((test_inn, test_out))
-                err_inn = float((vmap(model)(test_inn) > .5).mean())
-                err_out = float((vmap(model)(test_out) < .5).mean())
+                test_err_inn = (vmap(model)(test_inn) > .5).mean(axis=0)
+                test_err_out = (vmap(model)(test_out) < .5).mean(axis=0)
                 # store errors of training dataset
-                train_err_inn = float((vmap(model)(inn) > .5).mean())
-                train_err_out = float((vmap(model)(out) < .5).mean())
+                train_err_inn = (vmap(model)(inn) > .5).mean(axis=0)
+                train_err_out = (vmap(model)(out) < .5).mean(axis=0)
                 # store results
-                results = (err_inn, err_out, train_err_inn, train_err_out)
+                results = jnp.hstack((test_err_inn, test_err_out,
+                                      train_err_inn, train_err_out))
                 RESULTS['ERRORS'][ida, idf, idn] = results
                 RESULTS['LOSSES'][-1].append(losses)
                 # plot decision boundary
-                fig, ax = plot_decision(model, inn, out)
-                plt.savefig(experiment / f'decision_{a:.2f}_{f}_{n}.png')
-                plt.close()
+                # fig, ax = plot_decision(model, inn, out)
+                # plt.savefig(experiment / f'decision_{a:.2f}_{f}_{n}.png')
+                # plt.close()
 
     # some plotting
     def plot_errors(errors):
@@ -180,34 +217,38 @@ with ExpLogger() as experiment:
         ax.set_ylabel('Error fraction')
         cmap = mpl.colormaps.get_cmap('cividis')
         colors = [cmap(i) for i in jnp.linspace(0, 1, len(errors))]
-        inn, out = errors[..., 0], errors[..., 1]
-        for e_in, e_out, c in zip(inn, out, colors):
-            ax.plot(ENN, e_in, '-', c=c)
-            ax.plot(ENN, e_out, '--', c=c)
+        errs = errors.mean(axis=-1)
+        for err, c in zip(errs, colors):
+            err_mean = err.mean(axis=-1)
+            ax.plot(ENN, err_mean, '-o', c=c)
+            # add errorbars
+            err_sem = jnp.std(err, axis=-1) / jnp.sqrt(PPP)
+            ax.fill_between(ENN, err_mean-err_sem, err_mean+err_sem, alpha=.25, color=c)
         # for colorbar
         normer = plt.Normalize(vmin=FREQS[0], vmax=FREQS[-1])
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=normer)
         fig.colorbar(sm, ax=ax, label='frequency')
         # for legend
-        lcargs = dict(linestyle='-', color='black')
-        linner = mpl.lines.Line2D([0], [0], label='inner error', **lcargs)
-        lcargs = dict(linestyle='--', color='black')
-        louter = mpl.lines.Line2D([0], [0], label='outer error', **lcargs)
-        ax.legend(handles=[linner, louter])
         return fig, ax
 
-    fig, ax = plot_errors(RESULTS['ERRORS'][0, ..., :2])
-    plt.savefig(experiment / 'errors_test.png')
-    plt.close()
-    fig, ax = plot_errors(RESULTS['ERRORS'][0, ..., 2:])
-    plt.savefig(experiment / 'errors_train.png')
-    plt.close()
+    # make plots and save them
+    for ida, a in enumerate(ALPHAS):
+        # select test errors
+        test_errs = RESULTS['ERRORS'][ida, ..., :2]  # only tests
+        fig, ax = plot_errors(test_errs)
+        plt.savefig(experiment / 'errors_test_{a:.2f}.png')
+        plt.close()
+        # select train errors
+        train_errs = RESULTS['ERRORS'][ida, ..., 2:]  # only train
+        fig, ax = plot_errors(train_errs)
+        plt.savefig(experiment / 'errors_train_{a:.2f}.png')
+        plt.close()
 
     # and conclude by saving the RESULTS
     RESULTS['ERRORS'] = RESULTS['ERRORS'].tolist()
     experiment.save_dict(RESULTS, 'results.json')
     # modify the PARAMS dict to make it saveable
-    PARAMS['arch']['final_activation'] = PARAMS['arch']['final_activation'].__name__
+    # PARAMS['arch']['final_activation'] = PARAMS['arch']['final_activation'].__name__
     PARAMS['schedule'] = PARAMS['schedule'].__name__
     PARAMS['clipper'] = PARAMS['clipper'].__name__
     PARAMS['optimizer'] = PARAMS['optimizer'].__name__
