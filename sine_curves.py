@@ -1,5 +1,6 @@
 """Trying out learning curves on a sine curve on a circle."""
 from tqdm import tqdm
+import jax
 from jax import numpy as jnp, random as jrand, vmap, nn as jnn
 from numpy import zeros
 import equinox as eqx
@@ -7,16 +8,15 @@ import optax
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-from dataset_utils import dataloader, get_dataset, get_shifted_signal, get_polar_loop
+from dataset_utils import dataloader
 
 from expman import ExpLogger
 
 
-def plot_decision(model, pts_inn, pts_out, npts=100, mult=1.5):
+def plot_decision(model, pts_inn, pts_out, npts=100, mult=2):
     """plotting function for the decision boundary of a 2D MLP"""
     # plot decision boundary
-    pts = jnp.linspace(lo := pts_out.min()*mult,
-                       hi := pts_out.max()*mult, npts)
+    pts = jnp.linspace(lo := -mult, hi := mult, npts)
     xv, yv = jnp.meshgrid(pts, pts)
     pts = jnp.stack((xv, yv), axis=-1)
     # prob of being in inner circle
@@ -44,9 +44,12 @@ def plot_decision(model, pts_inn, pts_out, npts=100, mult=1.5):
     return fig, ax
 
 
-def sine_on_circle(N, f: int, a: float = .25):
+def sine_on_circle(N, f: int, a: float = .25, *, key=None):
     """It is not really a sine wave on a circle, but close enough"""
-    ts = jnp.linspace(0, 2*jnp.pi, N+1)[:-1]
+    if key is None:
+        ts = jnp.linspace(0, 2*jnp.pi, N+1)[:-1]
+    else:
+        ts = jrand.uniform(key, shape=(N,)) * (2*jnp.pi)
     r = 1 + a*jnp.sin(f*ts)
     return jnp.stack((r*jnp.cos(ts), r*jnp.sin(ts)), axis=1)
 
@@ -99,13 +102,13 @@ with ExpLogger() as experiment:
         optimizer=optax.adam,
         optimizer_params={},
         # DLOADER PARAMS
-        dloader_params={'batch_size': 16,
+        dloader_params={'batch_size': 2048,
                         'n_epochs': 5000, },
         # EXPERIMENTAL PARAMS
         # alphas=[1.0001, 1.0005, 1.001, 1.002, 1.003, 1.004, 1.005],
         alphas=[1.1,],
-        freqs=list(range(2, 8)),
-        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2.5, NN:=10).astype(int)).tolist(),
+        freqs=[4, 5, 6, 7],
+        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=10).astype(int)).tolist(),
         # OTHER
         n_test=int(1e4),
     )
@@ -143,7 +146,7 @@ with ExpLogger() as experiment:
             RESULTS['LOSSES'][-1].append([])
             for idn, n in enumerate(tqdm(ENN)):
                 # create dataset
-                inn = sine_on_circle(n, f)
+                inn = sine_on_circle(n, f, key=None)
                 out = inn * a
                 labs = jnp.repeat(jnp.arange(2), n)
                 dset = (jnp.concatenate((inn, out)), labs)
@@ -166,7 +169,7 @@ with ExpLogger() as experiment:
                 RESULTS['LOSSES'][-1].append(losses)
                 # plot decision boundary
                 fig, ax = plot_decision(model, inn, out)
-                plt.savefig(experiment / f'decision_{n}.png')
+                plt.savefig(experiment / f'decision_{a:.2f}_{f}_{n}.png')
                 plt.close()
 
     # some plotting
