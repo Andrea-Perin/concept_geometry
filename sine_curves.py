@@ -113,7 +113,7 @@ def train_model(model, dloader, optimizer):
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     losses = []
     for (xs, ys) in dloader:
-        model, opt_state, loss, grads = make_step(model, opt_state, xs, ys)
+        model, opt_state, loss = make_step(model, opt_state, xs, ys)
         losses.append(float(loss))
     return model, losses
 
