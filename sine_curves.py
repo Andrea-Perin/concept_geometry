@@ -92,7 +92,7 @@ def ce(y, y_pred):
 
 @eqx.filter_value_and_grad
 def loss(model, x, y):
-    y_preds = vmap(model)(x)
+    y_preds = vmap(model)(x).squeeze().T  # (batch size, n, fakedim)
     return jnp.sum(vmap(ce, in_axes=(None, 0))(y, y_preds))
 
 
@@ -122,7 +122,7 @@ with ExpLogger() as experiment:
         # NETWORK ARCHITECTURE
         arch={'in_size': (D := 2),
               'out_size': 1,
-              'width_size': 128,
+              'width_size': 256,
               'n': 10,
               # 'final_activation': jnn.sigmoid
               },
@@ -143,8 +143,8 @@ with ExpLogger() as experiment:
         # EXPERIMENTAL PARAMS
         # alphas=[1.0001, 1.0005, 1.001, 1.002, 1.003, 1.004, 1.005],
         alphas=[1.1,],
-        freqs=[4, 5,],
-        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=5).astype(int)).tolist(),
+        freqs=[4, 5, 6, 7, 8],
+        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=20).astype(int)).tolist(),
         # OTHER
         n_test=int(1e4),
     )
