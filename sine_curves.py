@@ -23,7 +23,11 @@ class PMLP(eqx.Module):
 
     def __init__(self, in_size, out_size, width_size, n, key):
         width = width_size
-        w1k, b1k, w2k, b2k, w3k, b3k = jrand.split(key, 6)
+        # w1k, b1k, w2k, b2k, w3k, b3k = jrand.split(key, 6)
+        keys = jrand.split(key, 3)
+        w1k, b1k = jrand.split(keys[0], 2)
+        w2k, b2k = jrand.split(keys[1], 2)
+        w3k, b3k = jrand.split(keys[2], 2)
         lim1 = 1 / jnp.sqrt(in_size)
         self.w1 = jrand.uniform(w1k, (n, width, in_size), minval=-lim1, maxval=lim1)
         self.b1 = jrand.uniform(b1k, (n, width), minval=-lim1, maxval=lim1)
@@ -37,7 +41,7 @@ class PMLP(eqx.Module):
     def __call__(self, x):
         x = self.b1 + jnp.einsum('nwi,i->nw', self.w1, x)
         x = jnn.relu(x)
-        x = self.b2 + jnp.einsum('nwi,ni->nw', self.w2, x)
+        x = self.b2 + jnp.einsum('nwv,nv->nw', self.w2, x)
         x = jnn.relu(x)
         x = self.b3 + jnp.einsum('now,nw->no', self.w3, x)
         x = vmap(jnn.sigmoid)(x)
@@ -109,7 +113,7 @@ def train_model(model, dloader, optimizer):
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     losses = []
     for (xs, ys) in dloader:
-        model, opt_state, loss = make_step(model, opt_state, xs, ys)
+        model, opt_state, loss, grads = make_step(model, opt_state, xs, ys)
         losses.append(float(loss))
     return model, losses
 
@@ -122,20 +126,21 @@ with ExpLogger() as experiment:
         # NETWORK ARCHITECTURE
         arch={'in_size': (D := 2),
               'out_size': 1,
-              'width_size': 128,
-              'n': 10,
-              # 'final_activation': jnn.sigmoid
+              'width_size': 256,
+              'n': 1,
+              # 'final_activation': jnn.sigmoid,
+              # 'depth': 2
               },
         # OPTIMIZER STUFF
         schedule=optax.warmup_cosine_decay_schedule,
-        schedule_params={'init_value': 1e-4,
+        schedule_params={'init_value': 1e-3,
                          'peak_value': 5e-3,
                          'warmup_steps': 50,
-                         'end_value': 1e-6,
+                         'end_value': 1e-5,
                          'decay_steps': 1000, },
         clipper=optax.clip,
-        clipper_params={'max_delta': 2.0},
-        optimizer=optax.adam,
+        clipper_params={'max_delta': 10.0},
+        optimizer=optax.sgd,
         optimizer_params={},
         # DLOADER PARAMS
         dloader_params={'batch_size': 2048,
@@ -144,7 +149,7 @@ with ExpLogger() as experiment:
         # alphas=[1.0001, 1.0005, 1.001, 1.002, 1.003, 1.004, 1.005],
         alphas=[1.1,],
         freqs=[4, 5,],
-        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=5).astype(int)).tolist(),
+        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=10).astype(int)).tolist(),
         # OTHER
         n_test=int(1e4),
     )
@@ -190,6 +195,7 @@ with ExpLogger() as experiment:
                 dload = dataloader(dset, **PARAMS['dloader_params'], skey=skey)
                 # train the model on the data
                 model = PMLP(**PARAMS['arch'], key=mkey)
+                # model = eqx.nn.MLP(**PARAMS['arch'], key=mkey)
                 model, losses = train_model(model, dload, optimizer)
                 # perform test on trained model, save errors
                 test_inn = sine_on_circle(N_TEST, f)
@@ -215,7 +221,7 @@ with ExpLogger() as experiment:
         ax.set_xscale('log')
         ax.set_xlabel('Number of samples')
         ax.set_ylabel('Error fraction')
-        cmap = mpl.colormaps.get_cmap('cividis')
+        cmap = mpl.colormaps['cividis']
         colors = [cmap(i) for i in jnp.linspace(0, 1, len(errors))]
         errs = errors.mean(axis=-1)
         for err, c in zip(errs, colors):
@@ -236,12 +242,12 @@ with ExpLogger() as experiment:
         # select test errors
         test_errs = RESULTS['ERRORS'][ida, ..., :2]  # only tests
         fig, ax = plot_errors(test_errs)
-        plt.savefig(experiment / 'errors_test_{a:.2f}.png')
+        plt.savefig(experiment / f'errors_test_{a:.2f}.png')
         plt.close()
         # select train errors
         train_errs = RESULTS['ERRORS'][ida, ..., 2:]  # only train
         fig, ax = plot_errors(train_errs)
-        plt.savefig(experiment / 'errors_train_{a:.2f}.png')
+        plt.savefig(experiment / f'errors_train_{a:.2f}.png')
         plt.close()
 
     # and conclude by saving the RESULTS
@@ -254,3 +260,13 @@ with ExpLogger() as experiment:
     PARAMS['optimizer'] = PARAMS['optimizer'].__name__
     # NOW save it :3
     experiment.save_dict(PARAMS, 'params.json')
+
+
+
+
+# mlp = eqx.nn.MLP(2, 1, 256, depth=2, final_activation=jnn.sigmoid, key=jrand.PRNGKey(0)) 
+# val, grad = loss(mlp, jnp.ones((1, 2)), 0)
+
+# pmlp = PMLP(2, 1, 256, 10, key=jrand.PRNGKey(0))
+# pval, pgrad = loss(pmlp, jnp.ones((1, 2)), 0)
+
