@@ -96,7 +96,7 @@ def ce(y, y_pred):
 
 @eqx.filter_value_and_grad
 def loss(model, x, y):
-    y_preds = vmap(model)(x)
+    y_preds = vmap(model)(x).squeeze().T  # (batch size, n, fakedim) -> (n, batch_size)
     return jnp.sum(vmap(ce, in_axes=(None, 0))(y, y_preds))
 
 
@@ -127,9 +127,8 @@ with ExpLogger() as experiment:
         arch={'in_size': (D := 2),
               'out_size': 1,
               'width_size': 256,
-              'n': 1,
-              # 'final_activation': jnn.sigmoid,
-              # 'depth': 2
+              'n': 10,
+              # 'final_activation': jnn.sigmoid
               },
         # OPTIMIZER STUFF
         schedule=optax.warmup_cosine_decay_schedule,
@@ -148,8 +147,8 @@ with ExpLogger() as experiment:
         # EXPERIMENTAL PARAMS
         # alphas=[1.0001, 1.0005, 1.001, 1.002, 1.003, 1.004, 1.005],
         alphas=[1.1,],
-        freqs=[4, 5,],
-        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=10).astype(int)).tolist(),
+        freqs=[4, 5, 6, 7, 8],
+        ns=jnp.unique(jnp.logspace(NMIN:=.5, NMAX:=2, NN:=20).astype(int)).tolist(),
         # OTHER
         n_test=int(1e4),
     )
@@ -260,13 +259,3 @@ with ExpLogger() as experiment:
     PARAMS['optimizer'] = PARAMS['optimizer'].__name__
     # NOW save it :3
     experiment.save_dict(PARAMS, 'params.json')
-
-
-
-
-# mlp = eqx.nn.MLP(2, 1, 256, depth=2, final_activation=jnn.sigmoid, key=jrand.PRNGKey(0)) 
-# val, grad = loss(mlp, jnp.ones((1, 2)), 0)
-
-# pmlp = PMLP(2, 1, 256, 10, key=jrand.PRNGKey(0))
-# pval, pgrad = loss(pmlp, jnp.ones((1, 2)), 0)
-
