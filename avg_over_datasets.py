@@ -1,4 +1,5 @@
-"""Trying out learning curves on a sine curve on a circle."""
+"""Learning a flower-like 2D shape. Points drawn randomly. Averaging over
+random datasets."""
 from tqdm import tqdm
 import jax
 from jax import numpy as jnp, random as jrand, vmap, nn as jnn
@@ -21,21 +22,21 @@ class PMLP(eqx.Module):
     w3: jax.Array
     b3: jax.Array
 
-    def __init__(self, in_size, out_size, width_size, n, key):
-        width = width_size
-        w1k, b1k, w2k, b2k, w3k, b3k = jrand.split(key, 6)
+    def _make_layer(self, in_size, out_size, n, key):
+        wk, bk = jrand.split(key)
         lim1 = 1 / jnp.sqrt(in_size)
-        self.w1 = jrand.uniform(w1k, (n, width, in_size), minval=-lim1, maxval=lim1)
-        self.b1 = jrand.uniform(b1k, (n, width), minval=-lim1, maxval=lim1)
-        lim2 = 1 / jnp.sqrt(width)
-        self.w2 = jrand.uniform(w2k, (n, width, width), minval=-lim2, maxval=lim2)
-        self.b2 = jrand.uniform(b2k, (n, width), minval=-lim2, maxval=lim2)
-        lim3 = 1 / jnp.sqrt(width)
-        self.w3 = jrand.uniform(w3k, (n, out_size, width), minval=-lim3, maxval=lim3)
-        self.b3 = jrand.uniform(b3k, (n, out_size), minval=-lim3, maxval=lim3)
+        w1 = jrand.uniform(wk, (n, out_size, in_size), minval=-lim1, maxval=lim1)
+        b1 = jrand.uniform(bk, (n, out_size), minval=-lim1, maxval=lim1)
+        return w1, b1
+
+    def __init__(self, in_size, out_size, width_size, n, key):
+        k1, k2, k3 = jrand.split(key, 3)
+        self.w1, self.b1 = self._make_layer(in_size, width_size, n, k1)
+        self.w2, self.b2 = self._make_layer(width_size, width_size, n, k2)
+        self.w3, self.b3 = self._make_layer(width_size, out_size, n, k3)
 
     def __call__(self, x):
-        x = self.b1 + jnp.einsum('nwi,i->nw', self.w1, x)
+        x = self.b1 + jnp.einsum('nwi,ni->nw', self.w1, x)
         x = jnn.relu(x)
         x = self.b2 + jnp.einsum('nwi,ni->nw', self.w2, x)
         x = jnn.relu(x)
@@ -75,14 +76,11 @@ def plot_decision(model, pts_inn, pts_out, npts=100, mult=2):
     return fig, ax
 
 
-def sine_on_circle(N, f: int, a: float = .25, *, key=None):
+def sine_on_circle(N, n, f: int, a: float = .25, *, key=None):
     """It is not really a sine wave on a circle, but close enough"""
-    if key is None:
-        ts = jnp.linspace(0, 2*jnp.pi, N+1)[:-1]
-    else:
-        ts = jrand.uniform(key, shape=(N,)) * (2*jnp.pi)
+    ts = jrand.uniform(key, shape=(N, n)) * (2*jnp.pi)
     r = 1 + a*jnp.sin(f*ts)
-    return jnp.stack((r*jnp.cos(ts), r*jnp.sin(ts)), axis=1)
+    return jnp.stack((r*jnp.cos(ts), r*jnp.sin(ts)), axis=-1)
 
 
 # training function
@@ -92,7 +90,8 @@ def ce(y, y_pred):
 
 @eqx.filter_value_and_grad
 def loss(model, x, y):
-    y_preds = vmap(model)(x).squeeze().T  # (batch size, n, fakedim)
+    y_preds = vmap(model)(x)  # (batch_size, n, fakedim)
+    y_preds = y_preds.squeeze().T  # (n, batch_size)
     return jnp.sum(vmap(ce, in_axes=(None, 0))(y, y_preds))
 
 
@@ -122,8 +121,8 @@ with ExpLogger() as experiment:
         # NETWORK ARCHITECTURE
         arch={'in_size': (D := 2),
               'out_size': 1,
-              'width_size': 256,
-              'n': 100,
+              'width_size': 64,
+              'n': 50,
               # 'final_activation': jnn.sigmoid
               },
         # OPTIMIZER STUFF
@@ -155,10 +154,10 @@ with ExpLogger() as experiment:
     ALPHAS = PARAMS['alphas']
     ENN = PARAMS['ns']
     WIDTH = PARAMS['arch']['width_size']
-    PPP = PARAMS['arch']['n']
+    REPS = PARAMS['arch']['n']
 
     # prepare the storage of results
-    res_shape = (len(ALPHAS), len(FREQS), len(ENN), PPP)
+    res_shape = (len(ALPHAS), len(FREQS), len(ENN), REPS)
     RESULTS = dict(
         ERRORS=zeros((*res_shape, 4)),
         LOSSES=[],
@@ -183,7 +182,7 @@ with ExpLogger() as experiment:
             RESULTS['LOSSES'][-1].append([])
             for idn, n in enumerate(tqdm(ENN)):
                 # create dataset
-                inn = sine_on_circle(n, f, key=None)
+                inn = sine_on_circle(n, REPS, f, key=dkey)
                 out = inn * a
                 labs = jnp.repeat(jnp.arange(2), n)
                 dset = (jnp.concatenate((inn, out)), labs)
@@ -192,7 +191,7 @@ with ExpLogger() as experiment:
                 model = PMLP(**PARAMS['arch'], key=mkey)
                 model, losses = train_model(model, dload, optimizer)
                 # perform test on trained model, save errors
-                test_inn = sine_on_circle(N_TEST, f)
+                test_inn = sine_on_circle(N_TEST, REPS, f, key=dkey)
                 test_out = test_inn * a
                 test_err_inn = (vmap(model)(test_inn) > .5).mean(axis=0)
                 test_err_out = (vmap(model)(test_out) < .5).mean(axis=0)
@@ -222,7 +221,7 @@ with ExpLogger() as experiment:
             err_mean = err.mean(axis=-1)
             ax.plot(ENN, err_mean, '-o', c=c)
             # add errorbars
-            err_sem = jnp.std(err, axis=-1) / jnp.sqrt(PPP)
+            err_sem = jnp.std(err, axis=-1) / jnp.sqrt(REPS)
             ax.fill_between(ENN, err_mean-err_sem, err_mean+err_sem, alpha=.25, color=c)
         # for colorbar
         normer = plt.Normalize(vmin=FREQS[0], vmax=FREQS[-1])
@@ -236,12 +235,12 @@ with ExpLogger() as experiment:
         # select test errors
         test_errs = RESULTS['ERRORS'][ida, ..., :2]  # only tests
         fig, ax = plot_errors(test_errs)
-        plt.savefig(experiment / 'errors_test_{a:.2f}.png')
+        plt.savefig(experiment / f'errors_test_{a:.2f}.png')
         plt.close()
         # select train errors
         train_errs = RESULTS['ERRORS'][ida, ..., 2:]  # only train
         fig, ax = plot_errors(train_errs)
-        plt.savefig(experiment / 'errors_train_{a:.2f}.png')
+        plt.savefig(experiment / f'errors_train_{a:.2f}.png')
         plt.close()
 
     # and conclude by saving the RESULTS
