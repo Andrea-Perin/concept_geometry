@@ -214,7 +214,7 @@ with ExpLogger() as experiment:
         ax.set_xscale('log')
         ax.set_xlabel('Number of samples')
         ax.set_ylabel('Error fraction')
-        cmap = mpl.colormaps.get_cmap('cividis')
+        cmap = mpl.colormaps['cividis']
         colors = [cmap(i) for i in jnp.linspace(0, 1, len(errors))]
         errs = errors.mean(axis=-1)
         for err, c in zip(errs, colors):
